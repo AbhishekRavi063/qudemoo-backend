@@ -11,50 +11,50 @@ from dotenv import load_dotenv
 from google.cloud import storage
 from google.oauth2 import service_account
 from PyPDF2 import PdfReader
-import re
-
 
 load_dotenv()
 
 app = FastAPI()
 
-# ✅ CORS for frontend
+# ✅ CORS setup
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://qu-demo-clipboardai.vercel.app"],  # change to your frontend URL
+    allow_origins=["https://qu-demo-clipboardai.vercel.app"],  # update to match frontend
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ✅ OpenAI API
+# ✅ OpenAI key
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# ✅ Transcript GCS setup
+# ✅ GCS settings
 TRANSCRIPT_BUCKET = "transcript_puzzle"
 TRANSCRIPT_JSON_PATH = "transcripts/transcript_chunks.json"
 
-# ✅ PDF GCS setup
-PDF_BUCKET = "puzzle_io"  # Change this
-PDF_FOLDER = "pdf/"     # Change this (e.g., "pdf_chunks/")
+PDF_BUCKET = "puzzle_io"
+PDF_FOLDER = "pdf/"
 
-# 🔐 GCP credentials
 def get_credentials():
     key_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
     if not key_path or not os.path.exists(key_path):
         raise RuntimeError("Valid GOOGLE_APPLICATION_CREDENTIALS path is required")
     return service_account.Credentials.from_service_account_file(key_path)
 
-# 📄 Load transcript chunks
+# 🧠 Load transcript (with context at top level)
 def load_transcript_chunks():
     creds = get_credentials()
     client = storage.Client(credentials=creds)
     bucket = client.bucket(TRANSCRIPT_BUCKET)
     blob = bucket.blob(TRANSCRIPT_JSON_PATH)
     content = blob.download_as_text()
-    return json.loads(content)
+    data = json.loads(content)
 
-# 📄 Load PDF chunks from another bucket/folder
+    # Wrap chunks with context per transcript set
+    context = data.get("context", "")
+    return [{"text": chunk["text"], "source": chunk["source"], "context": context} for chunk in data.get("chunks", [])]
+
+# 📄 Load PDFs
 def load_pdf_chunks():
     creds = get_credentials()
     client = storage.Client(credentials=creds)
@@ -62,8 +62,6 @@ def load_pdf_chunks():
     blobs = client.list_blobs(PDF_BUCKET, prefix=PDF_FOLDER)
 
     chunks = []
-    skipped = 0
-
     for blob in blobs:
         if not blob.name.lower().endswith(".pdf"):
             continue
@@ -74,19 +72,17 @@ def load_pdf_chunks():
                 text = page.extract_text()
                 if text and text.strip():
                     chunks.append({
-                        "source": f"{os.path.basename(blob.name)} (page {i+1})",
-                        "text": text.strip()
+                        "text": text.strip(),
+                        "source": f"{os.path.basename(blob.name)} (page {i + 1})",
+                        "context": ""
                     })
         except Exception as e:
-            skipped += 1
             print(f"⚠️ Skipped {blob.name}: {e}")
-    
-    print(f"✅ Loaded {len(chunks)} PDF chunks. Skipped {skipped} PDFs.")
     return chunks
 
-# 🧠 Build FAISS index
+# 🧠 Embed and index
 def build_index(chunks):
-    texts = [chunk["text"] for chunk in chunks]
+    texts = [chunk["context"] + "\n\n" + chunk["text"] for chunk in chunks]
     response = openai.embeddings.create(input=texts, model="text-embedding-3-small")
     embeddings = response.data
     vectors = np.array([e.embedding for e in embeddings]).astype("float32")
@@ -95,7 +91,6 @@ def build_index(chunks):
     index.add(vectors)
     return index, chunks
 
-# 🔁 Load all chunks at startup
 @app.on_event("startup")
 def startup_event():
     global all_chunks, faiss_index
@@ -105,11 +100,10 @@ def startup_event():
     faiss_index, _ = build_index(all_chunks)
     print(f"✅ Loaded {len(all_chunks)} chunks (from transcripts and PDFs)")
 
-# 📥 Request model
+# 📥 Model
 class Question(BaseModel):
     question: str
 
-# 💬 Question answering endpoint
 @app.post("/ask")
 def ask_question(payload: Question):
     question = payload.question
@@ -117,18 +111,21 @@ def ask_question(payload: Question):
         input=[question], model="text-embedding-3-small"
     ).data[0].embedding
 
+    # 🔍 Search top 5 similar chunks (context + text is embedded)
     D, I = faiss_index.search(np.array([q_embedding], dtype="float32"), k=5)
     top_chunks = [all_chunks[i] for i in I[0]]
 
-    context = "\n\n".join([f"{chunk['source']}: {chunk['text']}" for chunk in top_chunks])
-    
-    system_prompt = (
-    "You are a concise and knowledgeable assistant. Based on the context below, answer the question with a clear and accurate summary. "
-    "Prioritize quality over length. Only include the most relevant details. "
-    "If the answer uses information from a video or PDF, cite the source (with page or timestamp)."
-   )
+    # 💬 Format prompt context
+    context_str = "\n\n".join(
+        [f"{chunk['source']}:\n{chunk['context']}\n{chunk['text']}" if chunk['context'] else f"{chunk['source']}:\n{chunk['text']}" for chunk in top_chunks]
+    )
 
-    user_prompt = f"Context:\n{context}\n\nQuestion: {question}"
+    system_prompt = (
+        "You are a concise and knowledgeable assistant. Based on the context below, answer the question clearly and accurately. "
+        "Cite the most relevant source (with timestamp or PDF page) if applicable."
+    )
+
+    user_prompt = f"Context:\n{context_str}\n\nQuestion: {question}"
 
     completion = openai.chat.completions.create(
         model="gpt-4",
@@ -137,10 +134,11 @@ def ask_question(payload: Question):
             {"role": "user", "content": user_prompt}
         ]
     )
+
     raw_answer = completion.choices[0].message.content
-    clean_answer = ' '.join(raw_answer.split())  # Remove extra newlines, etc.
+    clean_answer = ' '.join(raw_answer.split())
 
     return {
-            "answer": clean_answer,  # Frontend shows this
-            "sources": [chunk["source"] for chunk in top_chunks]  # Frontend uses these to create links
+        "answer": clean_answer,
+        "sources": [chunk["source"] for chunk in top_chunks]
     }
