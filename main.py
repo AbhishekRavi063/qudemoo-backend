@@ -124,7 +124,9 @@ def load_faqs():
     client = storage.Client(credentials=creds)
     bucket = client.bucket(TRANSCRIPT_BUCKET)
     blob = bucket.blob(FAQ_CSV_PATH)
-    content = blob.download_as_text()
+    content_bytes = blob.download_as_bytes()
+    content = content_bytes.decode("utf-8", errors="replace")  # or "ignore"
+
 
     df = pd.read_csv(io.StringIO(content))
     df.columns = df.columns.str.strip().str.lower()  # Normalize headers ✅
