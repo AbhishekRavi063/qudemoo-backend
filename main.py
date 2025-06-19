@@ -210,7 +210,7 @@ def ask_question(payload: Question):
             f"{chunk['source']}: {chunk['text'][:500]}" for chunk in top_chunks
         ])
 
-         system_prompt = (
+        system_prompt = (
                 "You are a product expert bot with deep knowledge of Puzzle.io, strictly based on video transcripts and FAQs. "
                 "Always prioritize and synthesize content from video transcripts. Use FAQs only to supplement when necessary. "
                 "If the answer cannot be found in these sources, respond with 'Not mentioned in the videos or FAQs.' "
