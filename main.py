@@ -18,6 +18,8 @@ import pandas as pd
 from sklearn.metrics.pairwise import cosine_similarity
 import logging
 from contextlib import asynccontextmanager
+import json
+
 
 
 
@@ -126,10 +128,16 @@ FAQ_EMBEDDINGS = []
 FAQ_DATA = []
 
 def get_credentials():
-    key_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-    if not key_path or not os.path.exists(key_path):
-        raise RuntimeError("Valid GOOGLE_APPLICATION_CREDENTIALS path is required")
-    return service_account.Credentials.from_service_account_file(key_path)
+    raw_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    
+    if not raw_json:
+        raise RuntimeError("GOOGLE_APPLICATION_CREDENTIALS not set")
+
+    try:
+        data = json.loads(raw_json)
+        return service_account.Credentials.from_service_account_info(data)
+    except json.JSONDecodeError:
+        raise RuntimeError("GOOGLE_APPLICATION_CREDENTIALS must be valid JSON")
 
 def download_faiss_index(local_path=FAISS_INDEX_PATH_LOCAL):
     creds = get_credentials()
