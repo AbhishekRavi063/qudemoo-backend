@@ -222,8 +222,6 @@ def ask_question(payload: Question):
             )
 
 
-
-
         user_prompt = f"Context:\n{context}\n\nQuestion: {payload.question}"
 
         completion = openai.chat.completions.create(
@@ -262,3 +260,5 @@ def ask_question(payload: Question):
         "sources": sources,
         "video_url": video_url
     }
+
+#
